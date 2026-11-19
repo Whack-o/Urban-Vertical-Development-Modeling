@@ -16,6 +16,11 @@ boundary_path = Path("boundaries/LA County/County_Boundary.shp") # file path to 
 output_path = Path("output/training.csv") # csv file to save output
 
 PIXEL_SIZE = 20 # Meters
+
+START_COLUMN = 0
+START_ROW = 0
+
+CLEAR_OUTPUT = False # If True, will clear output spreadsheet before starting.
 # -------------------------------------------------
 
 BUILDINGS = SimpleNamespace(
@@ -71,14 +76,21 @@ def calculate_volume_density(pixel, buildings, intersection_areas):
 
 total_pixels = BOUNDARY.columns * BOUNDARY.rows
 
-with open(output_path, mode="w", newline="") as csvfile:
+mode = "W" if CLEAR_OUTPUT or not output_path.exists() else "a"
+
+with open(output_path, mode=mode, newline="") as csvfile:
     fieldnames = ["x_min", "y_min", "x_max", "y_max", "num_buildings", "mean_height", "area_weighted_mean_height", "volume_density"]
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-    writer.writeheader()
+    
+    if mode == "w":
+        writer.writeheader()
+    
+    initial_progress = START_COLUMN * BOUNDARY.rows + START_ROW
 
-    with tqdm(total=total_pixels, desc="Processing Pixels", unit="pixel") as pbar:
-        for column in range(BOUNDARY.columns):
-            for row in range(BOUNDARY.rows):
+    with tqdm(total=total_pixels, initial=initial_progress, desc="Processing Pixels", unit="pixel") as pbar:
+        for column in range(START_COLUMN, BOUNDARY.columns):
+            row_start = START_ROW if column == START_COLUMN else 0
+            for row in range(row_start, BOUNDARY.rows):
                 pixel = box(
                     BOUNDARY.X_MIN + column * PIXEL_SIZE,
                     BOUNDARY.Y_MAX - (row + 1) * PIXEL_SIZE,
