@@ -17,8 +17,7 @@ output_path = Path("output/training.csv") # csv file to save output
 
 PIXEL_SIZE = 20 # Meters
 
-START_COLUMN = 0
-START_ROW = 0
+PROCESSED_PIXELS = 0 # Number of pixels already processed in previous runs. Use to resume processing
 
 CLEAR_OUTPUT = False # If True, will clear output spreadsheet before starting.
 # -------------------------------------------------
@@ -52,6 +51,9 @@ BUILDINGS.gdf[BUILDINGS.height_field] *= 1200 / 3937 # Convert the height from f
 
 BUILDINGS.spatial_index = BUILDINGS.gdf.sindex # Spatial index
 
+START_COLUMN = PROCESSED_PIXELS // BOUNDARY.rows
+START_ROW = PROCESSED_PIXELS % BOUNDARY.rows
+
 def get_intersecting_buildings(pixel):
     indices = BUILDINGS.spatial_index.query(pixel, predicate="intersects") 
     intersection_buildings = BUILDINGS.gdf.iloc[indices]
@@ -76,7 +78,10 @@ def calculate_volume_density(pixel, buildings, intersection_areas):
 
 total_pixels = BOUNDARY.columns * BOUNDARY.rows
 
-mode = "W" if CLEAR_OUTPUT or not output_path.exists() else "a"
+mode = "w" if CLEAR_OUTPUT or not output_path.exists() else "a"
+
+if PROCESSED_PIXELS >= total_pixels:
+    raise ValueError("Processing is already complete.")
 
 with open(output_path, mode=mode, newline="") as csvfile:
     fieldnames = ["x_min", "y_min", "x_max", "y_max", "num_buildings", "mean_height", "area_weighted_mean_height", "volume_density"]
