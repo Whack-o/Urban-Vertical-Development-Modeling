@@ -218,3 +218,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+
+
+
+
+
+
+# Additional stuff
+# -------------------------------
+
+# LIDAR data
+lidar/*
+!lidar/.gitkeep
+
+
+# Other Datasets
+buildings/*
+!buildings/.gitkeep
+
+boundaries/*
+!boundaries/.gitkeep
