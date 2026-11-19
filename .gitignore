@@ -240,3 +240,6 @@ buildings/*
 
 boundaries/*
 !boundaries/.gitkeep
+
+output/*
+!output/.gitkeep
