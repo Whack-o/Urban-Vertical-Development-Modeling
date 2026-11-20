@@ -243,3 +243,5 @@ boundaries/*
 
 output/*
 !output/.gitkeep
+
+error_log.txt
