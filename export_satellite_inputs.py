@@ -18,8 +18,8 @@ Edit AREAS and YEAR below. YEAR should match the year of your height labels.
 
 import ee
 
-PROJECT = "your-gee-project-id"  # your Earth Engine cloud project
-YEAR = 2023
+PROJECT = "building-height-mapping"  # your Earth Engine cloud project
+YEAR = 2020
 DRIVE_FOLDER = "building_height_inputs"
 
 # name: [west, south, east, north]  (lon/lat). Swap for wherever labels exist.

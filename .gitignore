@@ -235,11 +235,11 @@ lidar/*
 
 
 # Other Datasets
-buildings/*
-!buildings/.gitkeep
+data/buildings/*
+!data/buildings/.gitkeep
 
-boundaries/*
-!boundaries/.gitkeep
+data/boundaries/*
+!data/boundaries/.gitkeep
 
 output/*
 !output/.gitkeep

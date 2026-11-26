@@ -6,20 +6,22 @@ from types import SimpleNamespace
 import csv
 from tqdm import tqdm
 
+from satellite.satellite_features import get_satellite_data, close_satellite_data
+
 # -------------------------------------------------
-footprint_path = Path("buildings/LA_Buildings_2020.gdb") # file path to target footprint database
+footprint_path = Path("./data/buildings/LA_Buildings_2020.gdb") # file path to target footprint database
 footprint_layer = "LARIAC6_BUILDINGS_2020" # layer name of target footprint database
 height_field = "HEIGHT" # field name of building height in target footprint database
 
-boundary_path = Path("boundaries/LA County/County_Boundary.shp") # file path to target boundary shapefile
+boundary_path = Path("./data/boundaries/LA County/County_Boundary.shp") # file path to target boundary shapefile
 
-output_path = Path("output/training.csv") # csv file to save output
+output_path = Path("./output/training.csv") # csv file to save output
 
 PIXEL_SIZE = 20 # Meters
 
 PROCESSED_PIXELS = 0 # Number of pixels already processed in previous runs. Use to resume processing
 
-CLEAR_OUTPUT = False # If True, will clear output spreadsheet before starting.
+CLEAR_OUTPUT = True # If True, will clear output spreadsheet before starting.
 # -------------------------------------------------
 
 print("Preparing geospatial data, please wait...")
@@ -38,6 +40,9 @@ BOUNDARY.gdf = gpd.read_file(BOUNDARY.file).to_crs("EPSG:32611") # GeoDataFrame,
 BOUNDARY.poly = BOUNDARY.gdf.geometry.union_all() # Shapely Polygon
 
 BOUNDARY.X_MIN, BOUNDARY.Y_MIN, BOUNDARY.X_MAX, BOUNDARY.Y_MAX = BOUNDARY.poly.bounds
+
+BOUNDARY.X_MIN = math.floor(BOUNDARY.X_MIN / PIXEL_SIZE) * PIXEL_SIZE # Snap to grid
+BOUNDARY.Y_MAX = math.ceil(BOUNDARY.Y_MAX / PIXEL_SIZE) * PIXEL_SIZE
 
 BOUNDARY.width = BOUNDARY.X_MAX - BOUNDARY.X_MIN
 BOUNDARY.height = BOUNDARY.Y_MAX - BOUNDARY.Y_MIN
@@ -91,7 +96,16 @@ if PROCESSED_PIXELS >= total_pixels:
     raise ValueError("Processing is already complete.")
 
 with open(output_path, mode=mode, newline="") as csvfile:
-    fieldnames = ["x_min", "y_min", "x_max", "y_max", "num_buildings", "mean_height", "area_weighted_mean_height", "volume_density"]
+    fieldnames = [
+        "x_min", "y_min", "x_max", "y_max",
+        "num_buildings", "mean_height",
+        "area_weighted_mean_height", "volume_density",
+        "satellite_B2", "satellite_B3", "satellite_B4",
+        "satellite_B8", "satellite_B11", "satellite_B12",
+        "satellite_NDVI", "satellite_NDBI",
+        "satellite_VV", "satellite_VH",
+        "satellite_COPERNICUS_DEM", "satellite_FABDEM"
+    ]
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
     
     if mode == "w":
@@ -137,6 +151,8 @@ with open(output_path, mode=mode, newline="") as csvfile:
                         weighted_mean_height = net_volume / net_area if net_area > 0 else 0
                         volume_density = net_volume / pixel.area
                         
+                        satellite_data = get_satellite_data(pixel)
+                        
                         save_data = {
                             "x_min": x_min,
                             "y_min": y_min,
@@ -148,6 +164,8 @@ with open(output_path, mode=mode, newline="") as csvfile:
                             "volume_density": volume_density
                         }
                         
+                        save_data.update(satellite_data)
+                        
                         writer.writerow(save_data)
                     else:
                         #print("Pixel is outside of boundary, skipping...")
@@ -157,7 +175,9 @@ with open(output_path, mode=mode, newline="") as csvfile:
                     skipped_pixels += 1
 
                 pbar.update(1)
-                
+               
+        close_satellite_data()
+         
         error_log.close()
         if skipped_pixels > 0:
             print(f"Skipped pixels due to errors: {skipped_pixels}. Check error_log.txt for details.")

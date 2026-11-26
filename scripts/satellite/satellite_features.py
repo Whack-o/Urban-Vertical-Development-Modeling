@@ -1,4 +1,7 @@
 """
+USES A SINGULAR, MULTI-BAND GEOTIFF
+
+
 Read satellite values for one polygon (e.g. a label pixel) from the local
 GeoTIFFs made by download_satellite_data.py. No network calls, so it is fast
 enough to run millions of times.
@@ -18,8 +21,6 @@ Bands with no valid pixels come back as NaN.
 Set POLYGON_CRS to whatever CRS building_heights.py uses for its polygons.
 """
 
-import os
-
 import numpy as np
 import rasterio
 from pyproj import CRS, Transformer
@@ -28,22 +29,20 @@ from rasterio.errors import WindowError
 import shapely
 from shapely.geometry import mapping
 
-DATA_DIR = "satellite_data"
-POLYGON_CRS = "EPSG:4326"
-SOURCES = {"s2": "sentinel2.tif", "s1": "sentinel1.tif", "dem": "dem.tif"}
+POLYGON_CRS = "EPSG:32611"
+SOURCE_PATH = "data/geotiff/satellite_features_LA_2020.tif"
 
 
 class SatelliteSampler:
-    def __init__(self, data_dir=DATA_DIR, polygon_crs=POLYGON_CRS):
-        self.sources = []
-        for prefix, fname in SOURCES.items():
-            ds = rasterio.open(os.path.join(data_dir, fname))
-            names = [f"{prefix}_{d or i}" for i, d in enumerate(ds.descriptions, start=1)]
-            to_raster = None
-            if CRS.from_user_input(polygon_crs) != CRS.from_user_input(ds.crs):
-                tf = Transformer.from_crs(polygon_crs, ds.crs, always_xy=True)
-                to_raster = lambda xy, tf=tf: np.column_stack(tf.transform(xy[:, 0], xy[:, 1]))
-            self.sources.append((ds, names, to_raster))
+    def __init__(self, polygon_crs=POLYGON_CRS):
+        ds = rasterio.open(SOURCE_PATH)
+        names = [f"satellite_{d}" for i, d in enumerate(ds.descriptions, start=1)]
+        print(names)
+        to_raster = None
+        if CRS.from_user_input(polygon_crs) != CRS.from_user_input(ds.crs):
+            tf = Transformer.from_crs(polygon_crs, ds.crs, always_xy=True)
+            to_raster = lambda xy, tf=tf: np.column_stack(tf.transform(xy[:, 0], xy[:, 1]))
+        self.sources = [(ds, names, to_raster)]
 
     def get(self, polygon):
         out = {}
@@ -57,7 +56,7 @@ class SatelliteSampler:
             data = ds.read(window=win)
             inside = geometry_mask([mapping(geom)], out_shape=data.shape[1:],
                                    transform=ds.window_transform(win),
-                                   invert=True, all_touched=True)
+                                   invert=True, all_touched=False)        # Not including pixels only touching boundary
             for band, name in zip(data, names):
                 vals = band[inside]
                 vals = vals[vals != ds.nodata] if ds.nodata is not None else vals
@@ -78,3 +77,9 @@ def get_satellite_data(polygon):
     if _sampler is None:
         _sampler = SatelliteSampler()
     return _sampler.get(polygon)
+
+def close_satellite_data():
+    global _sampler
+    if _sampler is not None:
+        _sampler.close()
+        _sampler = None

@@ -19,7 +19,7 @@ OUTPUT_DRIVE_FOLDER = "Building Volume Estimation Project"
 TARGET_CRS = "EPSG:32611" # UTM zone 11N
 PIXEL_SIZE = 20 # meters
 
-BOUNDARY_PATH = Path("boundaries/LA County/County_Boundary.shp")  # file path to target boundary shapefile
+BOUNDARY_PATH = Path("data/boundaries/LA County/County_Boundary.shp")  # file path to target boundary shapefile
 
 ee.Initialize(project=PROJECT)
 
@@ -29,6 +29,9 @@ boundary_utm = boundary.to_crs(TARGET_CRS)  # GeoDataFrame, convert to UTM zone 
 boundary_poly = boundary_utm.geometry.union_all()  # Shapely Polygon
 
 X_MIN, Y_MIN, X_MAX, Y_MAX = boundary_poly.bounds
+
+X_MIN = math.floor(X_MIN / PIXEL_SIZE) * PIXEL_SIZE # Snap to grid
+Y_MAX = math.ceil(Y_MAX / PIXEL_SIZE) * PIXEL_SIZE
 
 width = X_MAX - X_MIN
 height = Y_MAX - Y_MIN
