@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import math
 import geopandas as gpd
@@ -5,8 +6,11 @@ from shapely.geometry import box
 from types import SimpleNamespace
 import csv
 from tqdm import tqdm
+import numpy as np
+import shapely
+import json
 
-from satellite.satellite_features import get_satellite_data, close_satellite_data
+from satellite.satellite_features import SatelliteSampler
 
 # -------------------------------------------------
 footprint_path = Path("./data/buildings/LA_Buildings_2020.gdb") # file path to target footprint database
@@ -16,6 +20,7 @@ height_field = "HEIGHT" # field name of building height in target footprint data
 boundary_path = Path("./data/boundaries/LA County/County_Boundary.shp") # file path to target boundary shapefile
 
 output_path = Path("./output/training.csv") # csv file to save output
+checkpoint_path = Path("./output/checkpoint.json") # file to save processing progress
 
 PIXEL_SIZE = 20 # Meters
 
@@ -49,135 +54,169 @@ BOUNDARY.height = BOUNDARY.Y_MAX - BOUNDARY.Y_MIN
 BOUNDARY.columns = math.ceil(BOUNDARY.width / PIXEL_SIZE)
 BOUNDARY.rows = math.ceil(BOUNDARY.height / PIXEL_SIZE)
 
+SATELLITE = SatelliteSampler(
+    grid_x_min=BOUNDARY.X_MIN,
+    grid_y_max=BOUNDARY.Y_MAX,
+    pixel_size=PIXEL_SIZE
+)
+
 BUILDINGS.gdf = gpd.read_file(
     BUILDINGS.file,
     layer=BUILDINGS.layer
 ).to_crs("EPSG:32611") # GeoDataFrame of buildings
 
-BUILDINGS.gdf[BUILDINGS.height_field] *= 1200 / 3937 # Convert the height from feet to meters (1 foot = 0.3048 meters, 1200/3937 is approximately 0.3048)
+BUILDINGS.gdf[BUILDINGS.height_field] *= 1200 / 3937
+
+BUILDING_GEOMETRIES = BUILDINGS.gdf.geometry.array
+
+BUILDING_HEIGHTS = BUILDINGS.gdf[
+    BUILDINGS.height_field
+].to_numpy(dtype=np.float64)
+
 
 BUILDINGS.spatial_index = BUILDINGS.gdf.sindex # Spatial index
-
-START_COLUMN = PROCESSED_PIXELS // BOUNDARY.rows
-START_ROW = PROCESSED_PIXELS % BOUNDARY.rows
-
-
-def get_intersecting_buildings(pixel):
-    indices = BUILDINGS.spatial_index.query(pixel)
-    return BUILDINGS.gdf.iloc[indices]
-"""
-def calculate_mean_height(buildings, intersection_areas):
-    valid = (intersection_areas > 0) & buildings[BUILDINGS.height_field].notna()
-    return buildings.loc[valid, BUILDINGS.height_field].mean() if valid.any() else 0
-
-def calculate_area_weighted_mean_height(buildings, intersection_areas):
-    valid = (intersection_areas > 0) & buildings[BUILDINGS.height_field].notna()
-    net_volume = (buildings.loc[valid, BUILDINGS.height_field] * intersection_areas[valid]).sum()
-    net_area = intersection_areas[valid].sum()
-    return net_volume / net_area if net_area > 0 else 0
-
-def calculate_volume_density(pixel, buildings, intersection_areas):
-    valid = (intersection_areas > 0) & buildings[BUILDINGS.height_field].notna()
-    net_volume = (buildings.loc[valid, BUILDINGS.height_field] * intersection_areas[valid]).sum()
-    return net_volume / pixel.area if pixel.area > 0 else 0
-
-"""
 
 # -------------------------------------------------
 
 total_pixels = BOUNDARY.columns * BOUNDARY.rows
 
+output_path.parent.mkdir(parents=True, exist_ok=True)
+
+# Load checkpoint if resuming
+if not CLEAR_OUTPUT and checkpoint_path.exists():
+    with open(checkpoint_path, "r") as checkpoint_file:
+        PROCESSED_PIXELS = json.load(checkpoint_file)["processed_pixels"]
+
 mode = "w" if CLEAR_OUTPUT or not output_path.exists() else "a"
 
-skipped_pixels = 0
-error_log = open("error_log.txt", "a")
-
 if PROCESSED_PIXELS >= total_pixels:
+    SATELLITE.close()
     raise ValueError("Processing is already complete.")
 
-with open(output_path, mode=mode, newline="") as csvfile:
-    fieldnames = [
-        "x_min", "y_min", "x_max", "y_max",
-        "num_buildings", "mean_height",
-        "area_weighted_mean_height", "volume_density",
-        "satellite_B2", "satellite_B3", "satellite_B4",
-        "satellite_B8", "satellite_B11", "satellite_B12",
-        "satellite_NDVI", "satellite_NDBI",
-        "satellite_VV", "satellite_VH",
-        "satellite_COPERNICUS_DEM", "satellite_FABDEM"
-    ]
-    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-    
-    if mode == "w":
-        writer.writeheader()
-    
-    initial_progress = START_COLUMN * BOUNDARY.rows + START_ROW
+START_COLUMN = PROCESSED_PIXELS // BOUNDARY.rows
+START_ROW = PROCESSED_PIXELS % BOUNDARY.rows
 
-    with tqdm(total=total_pixels, initial=initial_progress, desc="Processing Pixels", unit="pixel") as pbar:
-        for column in range(START_COLUMN, BOUNDARY.columns):
-            row_start = START_ROW if column == START_COLUMN else 0
-            for row in range(row_start, BOUNDARY.rows):
-                try:
-                    pixel = box(
-                        BOUNDARY.X_MIN + column * PIXEL_SIZE,
-                        BOUNDARY.Y_MAX - (row + 1) * PIXEL_SIZE,
-                        BOUNDARY.X_MIN + (column + 1) * PIXEL_SIZE,
-                        BOUNDARY.Y_MAX - row * PIXEL_SIZE
-                    )
-                    
-                    #print(f"Processing Pixel at Column: {column}, Row: {row}")
-                    
-                    if BOUNDARY.poly.covers(pixel):
-                        #print("Pixel is fully within boundary")
-                        
-                        x_min, y_min, x_max, y_max = pixel.bounds
-                        
-                        interesting_buildings = get_intersecting_buildings(pixel)
-                        intersection_areas = interesting_buildings.geometry.intersection(pixel).area
-                        
-                        heights = interesting_buildings[BUILDINGS.height_field]
+skipped_pixels = 0
+checkpoint_interval = 10000
 
-                        # Only include buildings with positive intersection area and valid heights
-                        valid = (intersection_areas > 0) & heights.notna()
+try:
+    with open("error_log.txt", "a") as error_log:
+        with open(output_path, mode=mode, newline="") as csvfile:
+            fieldnames = [
+                "x_min", "y_min", "x_max", "y_max",
+                "num_buildings", "mean_height",
+                "area_weighted_mean_height", "volume_density",
+                "satellite_B2", "satellite_B3", "satellite_B4",
+                "satellite_B8", "satellite_B11", "satellite_B12",
+                "satellite_NDVI", "satellite_NDBI",
+                "satellite_VV", "satellite_VH",
+                "satellite_COPERNICUS_DEM", "satellite_FABDEM"
+            ]
 
-                        valid_heights = heights[valid]
-                        valid_areas = intersection_areas[valid]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
-                        # Calculate metrics
-                        net_volume = (valid_heights * valid_areas).sum()
-                        net_area = valid_areas.sum()
+            if mode == "w":
+                writer.writeheader()
 
-                        mean_height = valid_heights.mean() if not valid_heights.empty else 0
-                        weighted_mean_height = net_volume / net_area if net_area > 0 else 0
-                        volume_density = net_volume / pixel.area
-                        
-                        satellite_data = get_satellite_data(pixel)
-                        
-                        save_data = {
-                            "x_min": x_min,
-                            "y_min": y_min,
-                            "x_max": x_max,
-                            "y_max": y_max,
-                            "num_buildings": (intersection_areas > 0).sum(), # only count positive-area intersections
-                            "mean_height": mean_height,
-                            "area_weighted_mean_height": weighted_mean_height,
-                            "volume_density": volume_density
-                        }
-                        
-                        save_data.update(satellite_data)
-                        
-                        writer.writerow(save_data)
-                    else:
-                        #print("Pixel is outside of boundary, skipping...")
-                        pass
-                except Exception as e:
-                    error_log.write(f"Error processing pixel at Column: {column}, Row: {row}. Error: {e}\n")
-                    skipped_pixels += 1
+            initial_progress = START_COLUMN * BOUNDARY.rows + START_ROW
 
-                pbar.update(1)
-               
-        close_satellite_data()
-         
-        error_log.close()
-        if skipped_pixels > 0:
-            print(f"Skipped pixels due to errors: {skipped_pixels}. Check error_log.txt for details.")
+            with tqdm(total=total_pixels, initial=initial_progress, desc="Processing Pixels", unit="pixel") as pbar:
+                for column in range(START_COLUMN, BOUNDARY.columns):
+                    row_start = START_ROW if column == START_COLUMN else 0
+
+                    for row in range(row_start, BOUNDARY.rows):
+                        try:
+                            pixel = box(
+                                BOUNDARY.X_MIN + column * PIXEL_SIZE,
+                                BOUNDARY.Y_MAX - (row + 1) * PIXEL_SIZE,
+                                BOUNDARY.X_MIN + (column + 1) * PIXEL_SIZE,
+                                BOUNDARY.Y_MAX - row * PIXEL_SIZE
+                            )
+
+                            #print(f"Processing Pixel at Column: {column}, Row: {row}")
+
+                            if BOUNDARY.poly.covers(pixel):
+                                #print("Pixel is fully within boundary")
+
+                                x_min, y_min, x_max, y_max = pixel.bounds
+
+                                indices = BUILDINGS.spatial_index.query(pixel)
+
+                                if len(indices):
+                                    areas = shapely.area(
+                                        shapely.intersection(BUILDING_GEOMETRIES[indices], pixel)
+                                    )
+
+                                    heights = BUILDING_HEIGHTS[indices]
+
+                                    positive = areas > 0
+                                    valid = positive & np.isfinite(heights)
+
+                                    valid_heights = heights[valid]
+                                    valid_areas = areas[valid]
+
+                                    net_volume = np.dot(valid_heights, valid_areas)
+                                    net_area = valid_areas.sum()
+
+                                    num_buildings = np.count_nonzero(positive)
+
+                                    mean_height = valid_heights.mean() if len(valid_heights) else 0
+                                    weighted_mean_height = net_volume / net_area if net_area > 0 else 0
+                                    volume_density = net_volume / pixel.area
+
+                                else:
+                                    num_buildings = 0
+                                    mean_height = 0
+                                    weighted_mean_height = 0
+                                    volume_density = 0
+
+                                satellite_data = SATELLITE.get(row, column)
+
+                                save_data = {
+                                    "x_min": x_min,
+                                    "y_min": y_min,
+                                    "x_max": x_max,
+                                    "y_max": y_max,
+                                    "num_buildings": num_buildings,
+                                    "mean_height": mean_height,
+                                    "area_weighted_mean_height": weighted_mean_height,
+                                    "volume_density": volume_density
+                                }
+
+                                save_data.update(satellite_data)
+
+                                writer.writerow(save_data)
+
+                        except Exception as e:
+                            error_log.write(
+                                f"Error processing pixel at Column: {column}, Row: {row}. Error: {e}\n"
+                            )
+                            error_log.flush()
+                            skipped_pixels += 1
+
+                        # Update progress after every attempted pixel
+                        PROCESSED_PIXELS += 1
+                        pbar.update(1)
+
+                        # Save progress periodically
+                        if PROCESSED_PIXELS % checkpoint_interval == 0:
+                            csvfile.flush()
+                            with open(checkpoint_path, "w") as checkpoint_file:
+                                json.dump(
+                                    {"processed_pixels": PROCESSED_PIXELS},
+                                    checkpoint_file
+                                )
+
+            # Save final progress
+            csvfile.flush()
+            with open(checkpoint_path, "w") as checkpoint_file:
+                json.dump(
+                    {"processed_pixels": PROCESSED_PIXELS},
+                    checkpoint_file
+                )
+
+    if skipped_pixels > 0:
+        print(f"Skipped pixels due to errors: {skipped_pixels}. Check error_log.txt for details.")
+
+finally:
+    SATELLITE.close()

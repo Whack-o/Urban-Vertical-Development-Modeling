@@ -285,9 +285,16 @@ satellite_stack = (
     .addBands(dtm)
 ).toFloat() # Convert all to Float32, sufficient precision
 
+print("Expected transform:", GRID_TRANSFORM)
+print("Expected region:", GRID_REGION.getInfo())
+print("Sentinel-2 projection:", sentinel2.select("B2").projection().getInfo())
+print("Final stack projection:", satellite_stack.projection().getInfo())
+
 # --------------------------------------
 
 # Save the GeoTIFF file to your Google Drive
+
+
 task = ee.batch.Export.image.toDrive(
     image=satellite_stack,
     description=f"satellite_features_{YEAR}",

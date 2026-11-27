@@ -21,65 +21,71 @@ Bands with no valid pixels come back as NaN.
 Set POLYGON_CRS to whatever CRS building_heights.py uses for its polygons.
 """
 
+
 import numpy as np
 import rasterio
-from pyproj import CRS, Transformer
-from rasterio.features import geometry_mask, geometry_window
-from rasterio.errors import WindowError
-import shapely
-from shapely.geometry import mapping
+from pyproj import CRS
 
-POLYGON_CRS = "EPSG:32611"
 SOURCE_PATH = "data/geotiff/satellite_features_LA_2020.tif"
+POLYGON_CRS = "EPSG:32611"
 
 
 class SatelliteSampler:
-    def __init__(self, polygon_crs=POLYGON_CRS):
-        ds = rasterio.open(SOURCE_PATH)
-        names = [f"satellite_{d}" for i, d in enumerate(ds.descriptions, start=1)]
-        print(names)
-        to_raster = None
-        if CRS.from_user_input(polygon_crs) != CRS.from_user_input(ds.crs):
-            tf = Transformer.from_crs(polygon_crs, ds.crs, always_xy=True)
-            to_raster = lambda xy, tf=tf: np.column_stack(tf.transform(xy[:, 0], xy[:, 1]))
-        self.sources = [(ds, names, to_raster)]
+    def __init__(self, grid_x_min, grid_y_max, pixel_size):
+        self.ds = rasterio.open(SOURCE_PATH)
 
-    def get(self, polygon):
-        out = {}
-        for ds, names, to_raster in self.sources:
-            geom = shapely.transform(polygon, to_raster) if to_raster else polygon
-            try:
-                win = geometry_window(ds, [mapping(geom)])
-            except WindowError:  # polygon is outside the downloaded area
-                out.update({n: np.nan for n in names})
-                continue
-            data = ds.read(window=win)
-            inside = geometry_mask([mapping(geom)], out_shape=data.shape[1:],
-                                   transform=ds.window_transform(win),
-                                   invert=True, all_touched=False)        # Not including pixels only touching boundary
-            for band, name in zip(data, names):
-                vals = band[inside]
-                vals = vals[vals != ds.nodata] if ds.nodata is not None else vals
-                out[name] = float(vals.mean()) if vals.size else np.nan
-        return out
+        if CRS.from_user_input(self.ds.crs) != CRS.from_user_input(POLYGON_CRS):
+            raise ValueError("Satellite raster CRS does not match training grid.")
+
+        t = self.ds.transform
+
+        if (
+            not np.isclose(t.a, pixel_size)
+            or not np.isclose(t.e, -pixel_size)
+            or not np.isclose(t.b, 0)
+            or not np.isclose(t.d, 0)
+        ):
+            raise ValueError("Satellite raster resolution or orientation does not match training grid.")
+
+        col_offset = (grid_x_min - t.c) / pixel_size
+        row_offset = (t.f - grid_y_max) / pixel_size
+
+        if not np.isclose(col_offset, round(col_offset), atol=1e-6):
+            raise ValueError("Training grid is not aligned with satellite raster.")
+
+        if not np.isclose(row_offset, round(row_offset), atol=1e-6):
+            raise ValueError("Training grid is not aligned with satellite raster.")
+
+        self.col_offset = round(col_offset)
+        self.row_offset = round(row_offset)
+
+        self.names = [f"satellite_{d}" for d in self.ds.descriptions]
+
+        estimated_gb = (
+            self.ds.width * self.ds.height * self.ds.count
+            * np.dtype(self.ds.dtypes[0]).itemsize / 1024**3
+        )
+
+        print(f"Loading satellite raster into memory: {estimated_gb:.2f} GB")
+        self.data = self.ds.read()
+
+    def get(self, row, column):
+        r = self.row_offset + row
+        c = self.col_offset + column
+
+        if not (0 <= r < self.ds.height and 0 <= c < self.ds.width):
+            return {name: np.nan for name in self.names}
+
+        values = self.data[:, r, c]
+        valid = np.isfinite(values)
+
+        if self.ds.nodata is not None:
+            valid &= values != self.ds.nodata
+
+        return {
+            name: float(value) if is_valid else np.nan
+            for name, value, is_valid in zip(self.names, values, valid)
+        }
 
     def close(self):
-        for ds, _, _ in self.sources:
-            ds.close()
-
-
-_sampler = None
-
-
-def get_satellite_data(polygon):
-    """Mean satellite band values inside `polygon` (shapely geometry in POLYGON_CRS)."""
-    global _sampler
-    if _sampler is None:
-        _sampler = SatelliteSampler()
-    return _sampler.get(polygon)
-
-def close_satellite_data():
-    global _sampler
-    if _sampler is not None:
-        _sampler.close()
-        _sampler = None
+        self.ds.close()
